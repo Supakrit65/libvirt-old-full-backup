@@ -1,181 +1,143 @@
-# vm_backup.sh
+# **vm_backup.sh — Full‑Disk & Snapshot Backup Helper for Legacy libvirt**
 
-A simple, beginner-friendly Bash script to take live (or offline) backups of KVM virtual machines.  
-It captures all disk devices (but skips read-only CD-ROMs), creates a consistent point-in-time backup, optionally compresses the QCOW2 images, dumps & patches the domain XML, and keeps only the N most recent backups.
-
----
-
-## Table of Contents
-
-1. [Features](#features)  
-2. [Prerequisites](#prerequisites)  
-3. [Installation](#installation)  
-4. [Usage](#usage)  
-5. [How It Works](#how-it-works)  
-6. [Restoring a Backup](#restoring-a-backup)  
-7. [Configuration Options](#configuration-options)  
-8. [Troubleshooting](#troubleshooting)  
+> **Use‑case:** You run Ubuntu 20.04 LTS where the distro ships **libvirt 6.0.0** (the
+> last version Canonical ever back‑ported).  The modern *“push / pull backup API”*
+> introduced in libvirt ≥ 7.2.0 is **not available**, so you need the older, proven
+> *external‑snapshot + active block‑commit* workflow.  That is exactly what this
+> script automates — safely and idempotently.
+>
+> *The method is endorsed (and still documented) in the upstream libvirt
+>   **Efficient live full disk backup** guide* <https://libvirt.org/kbase/full_backup.html>.
 
 ---
 
-## Features
+## Why not `virsh backup-begin`?
 
-- **Live snapshot** of running VMs via `virsh snapshot-create-as`  
-- **Offline copy** for powered-off VMs  
-- **Skip** CD-ROM (`.iso`) devices  
-- **Sparse copy** of QCOW2 disks to preserve holes  
-- **Optional internal compression** of QCOW2 (`--compress`) to save space  
-- **Automatic XML dump & patch** (new name + fresh UUID + updated disk paths)  
-- **Rotation** of old backups, keeping only the N most recent  
+* `virDomainBackupBegin()` / `virsh backup-begin` first appeared in **libvirt 7.2**
+  (Mar 2021) and requires **QEMU 4.2+**.  Ubuntu 20.04’s official repos provide
+  libvirt 6.0 + QEMU 4.2 **only via the back‑ports PPA** — most long‑term systems
+  stay on the GA stack for stability.
+* Building a newer libvirt locally is possible but drags in a large dependency
+  chain (glib2, system‑capabilities, etc.) and voids vendor support.
 
----
-
-## Prerequisites
-
-- **Host OS**: Linux with KVM/libvirt installed  
-- **Commands**:
-  - `bash`  
-  - `virsh`  
-  - `qemu-img` (from `qemu-utils`; required only if using `--compress`)  
-  - Standard Unix tools: `awk`, `sed`, `cp`, `mv`, `ls`, `xargs`  
-
-Install missing tools on Debian/Ubuntu:
-```bash
-sudo apt update
-sudo apt install qemu-utils libvirt-clients
-````
+Hence the classic overlay → copy → block‑commit approach remains the most
+portable and *supported* way to obtain **consistent full‑disk backups** on such
+hosts.
 
 ---
 
-## Installation
+## Features
 
-1. Copy the script to `/usr/local/bin/vm_backup.sh` (or any folder in your `$PATH`):
-
-   ```bash
-   sudo cp vm_backup.sh /usr/local/bin/
-   sudo chmod +x /usr/local/bin/vm_backup.sh
-   ```
-
-2. Verify it’s executable:
-
-   ```bash
-   vm_backup.sh --help
-   ```
+| Capability | Notes |
+|------------|-------|
+| **External snapshot ("overlay")** | Uses `virsh snapshot-create-as` to freeze base qcow2 files; overlays are later block‑committed and deleted. |
+| **Disk copy** | Copies every `<disk type='file' device='disk'>` (sparsely) to the backup dir. |
+| **Optional qcow2 re‑compression** | `--compress` → `qemu-img convert -c`. |
+| **Internal snapshot migration** | Dumps each internal snapshot XML, rewrites disk paths & UUID, stores in `$DEST/snapshots/`. |
+| **Self‑contained restore XML** | Patched domain XML saved alongside disks — just `virsh define` to restore. |
+| **Custom restore name** | `--new-vm-domain-name` overrides the default.
+| **Crash‑safe cleanup** | Trap merges overlays & drops snapshot metadata on Ctrl‑C/abort. |
+| **Rotation** | Keeps *N* most recent backups (default 6). |
 
 ---
 
-## Usage
+## Prerequisites
 
 ```bash
-vm_backup.sh \
-  --backup-base-dir /mnt/backups \
-  --vm-domain myvm \
-  [--max-backups 5] \
-  [--compress]
+virsh         # libvirt‑cli ≥ 1.2.9 (Ubuntu 20.04 ships 6.0)
+xmlstarlet    # tiny XML editor
+qemu-img      # only needed with --compress
 ```
 
-* `--backup-base-dir DIR`
-  Base folder under which backups are stored.
-  Each VM will have its own subdirectory:
-  `/mnt/backups/<vm-domain>/<timestamp>/`
-
-* `--vm-domain NAME`
-  The libvirt domain name of your VM (as shown by `virsh list --all`).
-
-* `--max-backups N` (optional, default 6)
-  How many timestamped backups to keep per VM.
-
-* `--compress` (optional)
-  Enable internal QCOW2 compression (`qemu-img convert -c`).
+> libvirt ≥ 1.2.9 supports **`blockcommit --active --pivot`** that this script
+> relies on — see the [libvirt 1.2.9 release notes](https://libvirt.org/news.html).
 
 ---
 
-## How It Works
-
-1. **Enumerate disks**
-   Uses `virsh domblklist --details` + `awk` to list all **`disk`** devices (skips CD-ROMs).
-
-2. **Snapshot (if running)**
-   If the VM is `running`, creates an external overlay with
-   `virsh snapshot-create-as --disk-only --atomic --no-metadata`.
-   New writes go into `<dev>.snap.qcow2`; the base QCOW2 is frozen.
-
-3. **Copy & (optional) compress**
-
-   * **Sparse copy**: `cp --sparse=always` preserves holes in the QCOW2.
-   * **Optional compression**: if `--compress` is set, `qemu-img convert -O qcow2 -c`
-     compresses the image internally (may take time on large disks).
-
-4. **Merge overlay**
-   For a running VM, `virsh blockcommit --active --pivot` replays and removes overlays.
-
-5. **Dump & patch XML**
-
-   * `virsh dumpxml` into `<vm>-restore-<timestamp>.xml`
-   * Removes the old `<uuid>`, updates `<name>` to `vm-restore-<timestamp>`,
-     and rewrites each `<source file='…'>` to point at the new QCOW2.
-
-6. **Rotate old backups**
-   Keeps only the newest N timestamped directories under
-   `/mnt/backups/<vm-domain>/`.
-
----
-
-## Restoring a Backup
+## Quick Start
 
 ```bash
-# Define the restored VM (uses the <name> in the patched XML)
-virsh define /mnt/backups/myvm/2025-07-11-153000/myvm-restore-2025-07-11-153000.xml
-
-# Start it
-virsh start myvm-restore-2025-07-11-153000
+./vm_backup.sh \ 
+  --backup-base-dir /srv/backups/libvirt \ 
+  --vm-domain       ubuntu20 \ 
+  --compress
+  --new-vm-domain-name ubuntu20-backup1
 ```
 
-Or import directly:
+Resulting tree:
+
+```
+/srv/backups/libvirt/ubuntu20/2025-07-14-215447/
+├─ vda.qcow2
+├─ vdb.qcow2
+├─ ubuntu20-backup1.xml
+└─ snapshots/
+   ├─ snapshot1.xml
+   └─ snapshot2.xml
+```
+
+Restore with:
 
 ```bash
-virt-install \
-  --name myvm-restore-2025-07-11-153000 \
-  --ram 4096 --vcpus 2 \
-  --disk path=/mnt/backups/myvm/2025-07-11-153000/vda.qcow2,format=qcow2 \
-  --import \
-  --network network=default \
-  --os-variant ubuntu20.04 \
-  --noautoconsole
+virsh define ubuntu20-restore-*.xml
+virsh start  ubuntu20-restore-…
+for xml in snapshots/*.xml; do  # optional internal snaps
+  virsh snapshot-create ubuntu20-restore-… --xmlfile "$xml" --redefine
+done
 ```
 
 ---
 
-## Configuration Options
+## Command‑line Options
 
-* **`--backup-base-dir`**
-  Choose a high-capacity, reliable storage location (e.g., a NAS mount).
-
-* **`--vm-domain`**
-  Must match the exact libvirt domain name.
-
-* **`--max-backups`**
-  Tune based on available space vs. retention policy.
-
-* **`--compress`**
-  Enable or disable internal QCOW2 compression.
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--backup-base-dir DIR` | *(required)* | Directory that receives `/VM/TIMESTAMP/…`. |
+| `--vm-domain NAME` | *(required)* | Domain to back up. |
+| `--max-backups N` | `6` | Rotate; keep *N* newest. |
+| `--compress` | off | Re‑compress each qcow2 (CPU‑heavy, slower). |
+| `--new-vm-domain-name NAME` | `<vm>-restore-<timestamp>` | Name written into patched XML & snapshots. |
 
 ---
 
-## Troubleshooting
+## Workflow (older‑libvirt method)
 
-* **“ERROR: No disk devices found”**
-  Check `virsh domblklist <vm> --details` for correct device types.
+1. **Create external snapshot** — `virsh snapshot-create-as … --disk-only`
+2. **Copy base qcow2 files** while guest writes go to overlays.
+3. **(Optional) Compress** each copy with `qemu-img convert -c`.
+4. **Dump & patch internal snapshots** (if any).
+5. **Active block‑commit** — live‑merge overlay → base while VM is running.
+6. **Cleanup** — delete snapshot metadata + overlay files.
+7. **Dump & patch domain XML** with new name/uuid + new disk paths.
+8. **Rotate** old backups.
 
-* **Snapshot command fails**
-  Ensure QEMU guest agent is installed for `--quiesce`, or run while the VM is off.
-
-* **Backup size still very large**
-  If not using `--compress`, the QCOW2 remains sparse but uncompressed; use `--compress`.
-
-* **Restore domain name clashes**
-  The script auto-assigns `<name>vm-restore-…</name>` and strips `<uuid>` to avoid conflicts.
+See the upstream *Efficient live full disk backup* doc:  
+<https://libvirt.org/kbase/full_backup.html>
 
 ---
 
-> With this updated script and README, you can choose whether to compress your backups or keep them sparse only—perfect for balancing speed vs. space!
+## Cron Example (daily 03:00)
+
+```cron
+0 3 * * * /usr/local/bin/vm_backup.sh \
+           --backup-base-dir /srv/backups/libvirt \
+           --vm-domain ubuntu20              \
+           --compress
+```
+
+---
+
+## FAQ
+
+* **Why does the script modify UUIDs?**  A defined domain must have a unique
+  UUID; re‑using the original one would clash if the old VM is still known to
+  libvirt.
+* **Does it quiesce the filesystem?**  For best consistency install QEMU Guest
+  Agent inside the VM _and_ add `--quiesce` to the external‑snapshot command —
+  see the [libvirt snapshot docs](https://libvirt.org/formatdomain.html#elementsSnapshots).  You can wire this into the script if desired.
+* **How big is the backup?**  Roughly the size of the original qcow2 images (a
+  bit less with `--compress`).
+
+---
+
+Happy (legacy‑friendly) backing‑up!  
