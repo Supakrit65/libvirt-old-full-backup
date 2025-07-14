@@ -1,13 +1,12 @@
-# **vm_backup.sh — Full‑Disk & Snapshot Backup Helper for Legacy libvirt**
+# **vm_backup.sh — Full‑Disk & Snapshot Backup Helper for Legacy libvirt**
 
-> **Use‑case:** You run Ubuntu 20.04 LTS where the distro ships **libvirt 6.0.0** (the
-> last version Canonical ever back‑ported).  The modern *“push / pull backup API”*
-> introduced in libvirt ≥ 7.2.0 is **not available**, so you need the older, proven
-> *external‑snapshot + active block‑commit* workflow.  That is exactly what this
-> script automates — safely and idempotently.
+> **Use‑case:** You run Ubuntu 20.04 LTS where the distro ships **libvirt 6.0.0** (the last version Canonical ever back‑ported). The modern *“push/pull backup API”* introduced in libvirt ≥ 7.2.0 is **not available**, so you need the older, proven *external‑snapshot + active block‑commit* workflow. That is exactly what this script automates — safely and idempotently.
 >
-> *The method is endorsed (and still documented) in the upstream libvirt
->   **Efficient live full disk backup** guide* <https://libvirt.org/kbase/full_backup.html>.
+> The following command confirms the available `libvirt` versions on Ubuntu 20.04, showing that 6.0.0 is the default:
+>
+> ![Output of apt list showing libvirt 6.0.0 on Ubuntu 20.04](libvirt-version-ubuntu-20.04.png)
+>
+> *The method is endorsed (and still documented) in the upstream libvirt **Efficient live full disk backup** guide* <https://libvirt.org/kbase/full_backup.html>.
 
 ---
 
@@ -26,7 +25,7 @@ hosts.
 
 ---
 
-## Features
+## Features
 
 | Capability | Notes |
 |------------|-------|
@@ -41,7 +40,7 @@ hosts.
 
 ---
 
-## Prerequisites
+## Prerequisites
 
 ```bash
 virsh         # libvirt‑cli ≥ 1.2.9 (Ubuntu 20.04 ships 6.0)
@@ -54,7 +53,7 @@ qemu-img      # only needed with --compress
 
 ---
 
-## Quick Start
+## Quick Start
 
 ```bash
 ./vm_backup.sh \ 
@@ -88,7 +87,7 @@ done
 
 ---
 
-## Command‑line Options
+## Command‑line Options
 
 | Flag | Default | Description |
 |------|---------|-------------|
