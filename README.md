@@ -79,10 +79,12 @@ Restore with:
 
 ```bash
 virsh define ubuntu20-restore-*.xml
-virsh start  ubuntu20-restore-…
+
 for xml in snapshots/*.xml; do  # optional internal snaps
   virsh snapshot-create ubuntu20-restore-… --xmlfile "$xml" --redefine
 done
+
+virsh start  ubuntu20-restore-…
 ```
 
 ---
@@ -94,7 +96,7 @@ done
 | `--backup-base-dir DIR` | *(required)* | Directory that receives `/VM/TIMESTAMP/…`. |
 | `--vm-domain NAME` | *(required)* | Domain to back up. |
 | `--max-backups N` | `6` | Rotate; keep *N* newest. |
-| `--compress` | off | Re‑compress each qcow2 (CPU‑heavy, slower). |
+| `--compress` | off | Re‑compress each qcow2 (CPU‑heavy, slower 20+ minutes). |
 | `--new-vm-domain-name NAME` | `<vm>-restore-<timestamp>` | Name written into patched XML & snapshots. |
 
 ---
